@@ -1,4 +1,5 @@
 #include "game_round.hpp"
+#include "town_context.hpp"
 
 namespace jd
 {
@@ -21,16 +22,16 @@ RoundContext GameRound::generateInitRoundEvent() const
     return results;
 }
 
-RoundContext GameRound::generateRoundEvent(int32_t current_population, int32_t total_wheat) const
+RoundContext GameRound::generateRoundEvent(const TownContext& town_ctx) const
 {
     RoundContext results;
 
     results.land_price      = generator_->generateLandPrice();
     results.wheat_yield     = generator_->generateWheatYield();
-    results.rats_damage     = generator_->generateRatsActivity(total_wheat);
+    results.rats_damage     = generator_->generateRatsActivity(town_ctx.wheat_bushels);
     results.plague_occurred = generator_->checkPlague();
-    results.plague_deaths   = results.plague_occurred ? current_population / 2 : 0;
-    results.new_citizens    = generator_->generateMigration(results.plague_deaths, total_wheat, results.wheat_yield);
+    results.plague_deaths   = !results.plague_occurred ? 0 : town_ctx.population / 2;
+    results.new_citizens    = generator_->generateMigration(results.plague_deaths, town_ctx.wheat_bushels, results.wheat_yield);
 
     return results;
 }

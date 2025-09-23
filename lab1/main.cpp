@@ -8,9 +8,9 @@
 
 /*
  * TODO:
- * 1) Improve save manager to save all contexts!
- * 2) Implement render function
- * 3) Refactoring main logic (add rule models and invariant constants)
+ * 1) Modify tests
+ * 2) Final Redactoring
+ * 3) test and play it!
  * */
 
 void test_save_manager()
@@ -18,7 +18,7 @@ void test_save_manager()
     auto backend = std::make_unique<jd::file::Backend>(ROOT_DIR "/saves/save.bin");
     jd::GameSaveManger<jd::TownContext> serializer{std::move(backend)};
 
-    jd::TownContext gameState{.population = 100, .land_acres = 1000, .wheat_bushels = 2800, .year = 1};
+    jd::TownContext gameState = jd::TOWN_CONTEXT_DEFAULT;
 
     std::cout << "Saving game state..." << std::endl;
     if (serializer.serialize(gameState)) {

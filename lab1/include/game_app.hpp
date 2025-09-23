@@ -3,14 +3,11 @@
 #include <memory>
 
 #include "game_round.hpp"
+#include "game_save_manager.hpp"
 #include "town_context.hpp"
 
 namespace jd
 {
-namespace file
-{
-class IBackend;
-}
 class GameApplication
 {
 public:
@@ -20,17 +17,16 @@ public:
     void run();
 
 private:
-    void update();
+    bool update();
     bool save();
     bool load();
     void render();
+    void final();
 
     inline static constexpr const int32_t MAX_ROUNDS = 10;
-    std::shared_ptr<file::IBackend> town_ctx_backend_;
-    std::shared_ptr<file::IBackend> round_ctx_backend_;
     GameRound round_;
-    TownContext town_ctx_{};
-    RoundContext round_ctx_{};
-    int32_t died_with_fear_and_hunger_{};
+    TownContext town_ctx_;
+    RoundContext round_ctx_;
+    GameSavesManager<512> saves_manager_;
 };
 } // namespace jd

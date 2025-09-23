@@ -5,6 +5,8 @@
 
 namespace jd
 {
+
+// The structure contains values that are randomly generated at the end of each round.
 struct RoundContext {
     int32_t land_price;
     int32_t wheat_yield;
@@ -16,13 +18,15 @@ struct RoundContext {
 
 static_assert(std::is_trivial_v<RoundContext> && std::is_standard_layout_v<RoundContext>, "RoundContext must be a POD type for serialization");
 
+struct TownContext;
+
 class GameRound
 {
 public:
     GameRound(std::unique_ptr<IGameEventGenerator> generator);
 
     [[nodiscard]] RoundContext generateInitRoundEvent() const;
-    [[nodiscard]] RoundContext generateRoundEvent(int32_t current_death, int32_t total_wheat) const;
+    [[nodiscard]] RoundContext generateRoundEvent(const TownContext& town_ctx) const;
 
 private:
     std::unique_ptr<IGameEventGenerator> generator_;

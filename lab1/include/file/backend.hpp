@@ -10,8 +10,8 @@ class Backend : public IBackend
 public:
     Backend(std::string filename);
 
-    bool read(std::span<uint8_t> data) noexcept override;
-    bool write(std::span<const uint8_t> data) noexcept override;
+    int64_t read(std::span<std::byte> data) noexcept override;
+    int64_t write(std::span<const std::byte> data) noexcept override;
 
 private:
     std::string filename_;
