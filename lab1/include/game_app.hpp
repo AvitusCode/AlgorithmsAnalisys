@@ -23,10 +23,9 @@ private:
     void render();
     void final();
 
-    inline static constexpr const int32_t MAX_ROUNDS = 10;
     GameRound round_;
     TownContext town_ctx_;
     RoundContext round_ctx_;
-    GameSavesManager<512> saves_manager_;
+    GameSavesManager<sizeof(TownContext) + sizeof(RoundContext)> saves_manager_;
 };
 } // namespace jd

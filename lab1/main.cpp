@@ -1,7 +1,10 @@
 #include <iostream>
+#include <locale>
 #include <memory>
 
 #include "file/backend.hpp"
+#include "game_app.hpp"
+#include "game_event_generator.hpp"
 #include "game_save_manager.hpp"
 #include "path.h"
 #include "town_context.hpp"
@@ -16,28 +19,30 @@
 void test_save_manager()
 {
     auto backend = std::make_unique<jd::file::Backend>(ROOT_DIR "/saves/save.bin");
-    jd::GameSaveManger<jd::TownContext> serializer{std::move(backend)};
+    jd::GameSavesManager<sizeof(jd::TownContext)> manager{std::move(backend)};
 
-    jd::TownContext gameState = jd::TOWN_CONTEXT_DEFAULT;
+    jd::TownContext gameState                  = jd::TOWN_CONTEXT_DEFAULT;
+    gameState.fear_and_hunder_deaths_this_year = 11;
+    gameState.fear_and_hunder_deaths_mean      = 0.12f;
 
     std::cout << "Saving game state..." << std::endl;
-    if (serializer.serialize(gameState)) {
+    auto writer = manager.writer();
+    if (writer.write(gameState).commit()) {
         std::cout << "Game saved successfully!" << std::endl;
     } else {
         std::cout << "Failed to save game!" << std::endl;
     }
 
     std::cout << "Loading game state..." << std::endl;
+    manager.reset();
+    auto reader = manager.reader();
     jd::TownContext loadedState;
-    if (serializer.deserialize(loadedState)) {
-        if (loadedState.population == gameState.population && loadedState.land_acres == gameState.land_acres &&
-            loadedState.wheat_bushels == gameState.wheat_bushels && loadedState.year == gameState.year) {
-
+    reader.load().read(loadedState);
+    if (reader.isLoaded()) {
+        if (loadedState == gameState) {
             std::cout << "Game loaded successfully!" << std::endl;
-            std::cout << "Population: " << loadedState.population << std::endl;
-            std::cout << "Lands: " << loadedState.land_acres << std::endl;
-            std::cout << "Wheat: " << loadedState.wheat_bushels << std::endl;
-            std::cout << "Year: " << loadedState.year << std::endl;
+
+            std::cout << loadedState << std::endl;
         } else {
             std::cout << "Failed to load game!" << std::endl;
         }
@@ -48,6 +53,20 @@ void test_save_manager()
 
 int main(void)
 {
-    test_save_manager();
-    return 0;
+    // test_save_manager();
+
+    auto generator = std::make_unique<jd::GameEventGenerator>(ROOT_DIR "configs/configs.yaml");
+    auto gameApp   = std::make_unique<jd::GameApplication>(std::move(generator));
+
+    try {
+        std::locale::global(std::locale("en_US.UTF-8"));
+
+        gameApp->run();
+    } catch (const std::exception& ex) {
+        std::cerr << ex.what() << std::endl;
+        std::cin.get();
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
 }

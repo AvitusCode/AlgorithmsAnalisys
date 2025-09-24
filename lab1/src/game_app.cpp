@@ -1,6 +1,5 @@
 #include "game_app.hpp"
 
-#include <array>
 #include <charconv>
 #include <cstring>
 #include <format>
@@ -32,6 +31,12 @@ static constexpr const char* replica_wheat_to_eat = "Сколько бушеле
 static constexpr const char* replica_sow = "Сколько бушелей пшеницы повелеваешь засеять? ";
 static constexpr const char* replica_fail = "О, повелитель, пощади нас! У нас только {} человек, {} бушелей пшеницы и {} акров земли!";
 static constexpr const char* replica_what = "Прошу прощения, повелитель, что вы сказали? ";
+
+static constexpr float SOW_FACTOR             = 0.5f;
+static constexpr float END_GAME_DEATHS_COEFF  = 0.45f;
+static constexpr int32_t WHEAT_PERSON_EAT     = 20;
+static constexpr int32_t WHEAT_PERSON_PRODUCE = 10;
+static constexpr int32_t MAX_ROUNDS           = 10;
 // clang-format on
 
 struct ValidationRule {
@@ -133,19 +138,19 @@ GameApplication::~GameApplication()
 
 void GameApplication::run()
 {
-    bool is_failed{false};
+    bool is_ok{true};
 
     if (!load() || town_ctx_.year == 0) {
         town_ctx_  = TownContext{TOWN_CONTEXT_DEFAULT};
         round_ctx_ = round_.generateInitRoundEvent();
     }
 
-    while (town_ctx_.year <= MAX_ROUNDS && !is_failed) {
+    while (town_ctx_.year <= MAX_ROUNDS && is_ok) {
         render();
-        is_failed = update();
+        is_ok = update();
     }
 
-    if (is_failed) {
+    if (!is_ok) {
         return;
     }
 
@@ -160,11 +165,6 @@ void GameApplication::run()
 
 bool GameApplication::update()
 {
-    static constexpr const float SOW_FACTOR             = 0.5f;
-    static constexpr const float END_GAME_DEATHS_COEFF  = 0.45f;
-    static constexpr const int32_t WHEAT_PERSON_EAT     = 20;
-    static constexpr const int32_t WHEAT_PERSON_PRODUCE = 10;
-
     int32_t buy_land{};
     int32_t wheat_to_eat{};
     int32_t land_to_sow{};
@@ -195,9 +195,10 @@ bool GameApplication::update()
         return true;
     }
 
+    // TODO: fix problem with harvest. That is all!
     town_ctx_.wheat_bushels -= total_wheat_req;
+    town_ctx_.fear_and_hunder_deaths_mean += static_cast<float>(town_ctx_.fear_and_hunder_deaths_this_year) / static_cast<float>(town_ctx_.population);
     town_ctx_.population -= town_ctx_.fear_and_hunder_deaths_this_year;
-    town_ctx_.fear_and_hunder_deaths_total += town_ctx_.fear_and_hunder_deaths_this_year;
     town_ctx_.land_acres += buy_land;
     town_ctx_.wheat_harvested_this_year = land_to_sow * round_ctx_.wheat_yield;
     town_ctx_.wheat_bushels += town_ctx_.wheat_harvested_this_year;
@@ -238,7 +239,7 @@ bool GameApplication::load()
 void GameApplication::render()
 {
     clearConsole();
-    const char* plague_info = round_ctx_.plague_occurred ? " уничтожила половину населения" : " обошла нас стороной";
+    const char* plague_info = round_ctx_.plague_occurred ? "уничтожила половину населения" : "обошла нас стороной";
 
     std::cout << std::format(
                      the_seneschal_says,
@@ -262,7 +263,7 @@ void GameApplication::final()
 {
     using namespace std::literals::string_view_literals;
 
-    static constexpr const std::array<ValidationRule, 4> rules = {
+    static constexpr ValidationRule rules[] = {
         ValidationRule{
             +[](float P, int32_t L) noexcept { return P > 0.33f && L < 7; },
             "Из-за вашей некомпетентности в управлении, народ устроил бунт и изгнал вас из города.\nТеперь вы вынуждены влачить жалкое существование в изгнании."sv},
@@ -274,10 +275,10 @@ void GameApplication::final()
             "Вы справились вполне неплохо, у вас, конечно, есть недоброжелатели,\nно многие хотели бы увидеть вас во главе города снова."sv},
         ValidationRule{+[](float, int32_t) noexcept { return true; }, "Фантастика! Карл Великий, Дизраэли и Джефферсон вместе не справились бы лучше!"sv}};
 
-    const float P    = 0.0f;
+    const float P    = town_ctx_.fear_and_hunder_deaths_mean / static_cast<float>(town_ctx_.year);
     const uint32_t L = town_ctx_.land_acres / town_ctx_.population;
 
-    for (const auto& rule : rules) {
+    for (const ValidationRule& rule : rules) {
         if (rule.predicate(P, L)) {
             std::cout << rule.comment << std::endl;
             break;

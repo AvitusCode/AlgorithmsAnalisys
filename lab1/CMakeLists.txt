@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 include(FetchContent)
 
 # Configure file to have relative path to the source dir
+set(ROOT_INFO true)
 if (ROOT_INFO)
     set(ROOT_DIR "${CMAKE_SOURCE_DIR}/")
 else()
@@ -35,6 +36,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 
 set(SRC_FILES
     src/file/backend.cpp
+    src/town_context.cpp
     src/game_event_generator.cpp
     src/game_round.cpp
     src/game_app.cpp

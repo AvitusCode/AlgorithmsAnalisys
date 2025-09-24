@@ -1,11 +1,8 @@
 #include "file/backend.hpp"
 
 #include <cstdint>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
-
-namespace fs = std::filesystem;
 
 namespace jd::file
 {
@@ -29,47 +26,70 @@ Backend::Backend(std::string filename)
 
 int64_t Backend::read(std::span<std::byte> data) noexcept
 {
-    int64_t size{-1};
+    std::ifstream file;
+
     try {
-        if (!fs::exists(filename_)) {
-            // file does not exists
-            return -1;
-        }
-
-        std::uintmax_t fileSize = fs::file_size(fs::path{filename_});
-        size                    = std::min(fileSize, data.size());
-        if (size < static_cast<int64_t>(sizeof(uint32_t))) {
-            return -1;
-        }
-        size -= sizeof(uint32_t);
-
-        std::ifstream file(filename_, std::ios::binary);
+        file.open(filename_, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
-            // No such file (empty saves)
             return -1;
         }
 
-        file.read(reinterpret_cast<char*>(data.data()), size);
-
-        uint32_t file_crc{};
-        file.read(reinterpret_cast<char*>(&file_crc), sizeof(uint32_t));
-
-        uint32_t crc = calculateCRC32({data.data(), static_cast<size_t>(size)});
-
-        if (file_crc != crc) {
-            // std::cerr << "Bad src!" << std::endl;
+        const auto file_size = file.tellg();
+        if (file_size == -1) {
             return -1;
         }
 
+        if (static_cast<std::uintmax_t>(file_size) < sizeof(uint32_t)) {
+            return -1;
+        }
+
+        const int64_t data_size_in_file = static_cast<int64_t>(file_size) - sizeof(uint32_t);
+        if (data_size_in_file <= 0) {
+            return 0;
+        }
+
+        file.seekg(0, std::ios::beg);
         if (!file.good()) {
             return -1;
         }
-    } catch (const std::exception& ex) {
-        // std::cerr << "Error with file read: " << ex.what() << std::endl;
+
+        const size_t bytes_to_read = std::min(static_cast<size_t>(data_size_in_file), data.size());
+
+        if (bytes_to_read > 0) {
+            if (!file.read(reinterpret_cast<char*>(data.data()), bytes_to_read)) {
+                return -1;
+            }
+        }
+
+        if (static_cast<size_t>(data_size_in_file) > bytes_to_read) {
+            file.seekg(data_size_in_file - bytes_to_read, std::ios::cur);
+            if (!file.good()) {
+                return -1;
+            }
+        }
+
+        uint32_t file_crc = 0;
+        if (!file.read(reinterpret_cast<char*>(&file_crc), sizeof(file_crc))) {
+            return -1;
+        }
+
+        if (bytes_to_read > 0) {
+            const uint32_t calculated_crc = calculateCRC32(std::span<const std::byte>(data.data(), bytes_to_read));
+
+            if (file_crc != calculated_crc) {
+                return -1;
+            }
+        } else {
+            if (file_crc != 0) {
+                return -1;
+            }
+        }
+
+        return data_size_in_file;
+
+    } catch (const std::exception&) {
         return -1;
     }
-
-    return size;
 }
 
 int64_t Backend::write(std::span<const std::byte> data) noexcept
