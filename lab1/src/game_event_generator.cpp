@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "town_context.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 namespace jd
@@ -40,6 +42,31 @@ GameEventGenerator::GameEventGenerator(const std::string& config_file)
         migration_max_count_ = 50;
         plague_chance_       = 0.15;
     }
+}
+
+RoundContext GameEventGenerator::generateInitRoundEvent() const
+{
+    return {
+        .land_price      = generateLandPrice(),
+        .wheat_yield     = generateWheatYield(),
+        .rats_damage     = 0,
+        .new_citizens    = 0,
+        .plague_deaths   = 0,
+        .plague_occurred = false};
+}
+
+RoundContext GameEventGenerator::generateRoundEvent(const TownContext& town_ctx) const
+{
+    RoundContext results;
+
+    results.land_price      = generateLandPrice();
+    results.wheat_yield     = generateWheatYield();
+    results.rats_damage     = generateRatsActivity(town_ctx.wheat_bushels);
+    results.plague_occurred = checkPlague();
+    results.plague_deaths   = !results.plague_occurred ? 0 : town_ctx.population / 2;
+    results.new_citizens    = generateMigration(results.plague_deaths, town_ctx.wheat_bushels, results.wheat_yield);
+
+    return results;
 }
 
 int32_t GameEventGenerator::generateLandPrice() const

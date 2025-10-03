@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cstring>
+#include <exception>
 #include <format>
 #include <iostream>
 #include <limits>
@@ -9,13 +10,19 @@
 #include <string_view>
 
 #include "file/backend.hpp"
+#include "game_event_generator_interface.hpp"
 #include "game_save_manager.hpp"
 #include "path.h"
+
+using std::literals::string_view_literals::operator""sv;
 
 namespace
 {
 // clang-format off
-static constexpr const char* the_seneschal_says =
+static constexpr std::string_view the_seneschal_says =
+"Житель ест бушелей:           {}\n"
+"Житель обрабатывает акров:    {}\n"
+"Коэффициент бушель <-> зeрно: 1 <-> 2\n\n"
 "Мой повелитель, соизволь поведать тебе\n"
 "     в году {} твоего высочайшего правления\n"
 "     {} человек умерли с голоду, и {} человек прибыли в наш великий город;\n"
@@ -23,19 +30,20 @@ static constexpr const char* the_seneschal_says =
 "     Мы собрали {} бушелей пшеницы, по {} бушеля с акра;\n"
 "     Крысы истребили {} бушеля пшеницы, оставив {} бушеля в амбарах;\n"
 "     Город сейчас занимает {} акров, в нем проживает {} граждан;\n"
-"     1 акр земли стоит сейчас {} бушель.";
+"     1 акр земли стоит сейчас {} бушель."sv;
 
-static constexpr const char* the_seneschal_ask = "Что пожелаешь, повелитель?";
-static constexpr const char* replica_lands = "Сколько акров земли повелеваешь купить? ";
-static constexpr const char* replica_wheat_to_eat = "Сколько бушелей пшеницы повелеваешь съесть? ";
-static constexpr const char* replica_sow = "Сколько бушелей пшеницы повелеваешь засеять? ";
-static constexpr const char* replica_fail = "О, повелитель, пощади нас! У нас только {} человек, {} бушелей пшеницы и {} акров земли!";
-static constexpr const char* replica_what = "Прошу прощения, повелитель, что вы сказали? ";
+static constexpr std::string_view the_seneschal_ask = "Что пожелаешь, повелитель?"sv;
+static constexpr std::string_view replica_many_death = "Повелитель! Слишком много народа умерло голодной смертью, поэтому оставшиеся решили поживиться вами!"sv;
+static constexpr std::string_view replica_lands = "Сколько акров земли повелеваешь купить? "sv;
+static constexpr std::string_view replica_wheat_to_eat = "Сколько бушелей пшеницы повелеваешь съесть? "sv;
+static constexpr std::string_view replica_sow = "Сколько бушелей пшеницы повелеваешь засеять? "sv;
+static constexpr std::string_view replica_fail = "О, повелитель, пощади нас! У нас только {} человек, {} бушелей пшеницы и {} акров земли!"sv;
+static constexpr std::string_view replica_what = "Прошу прощения, повелитель, что вы сказали? "sv;
 
 static constexpr float SOW_FACTOR             = 0.5f;
 static constexpr float END_GAME_DEATHS_COEFF  = 0.45f;
 static constexpr int32_t WHEAT_PERSON_EAT     = 20;
-static constexpr int32_t WHEAT_PERSON_PRODUCE = 10;
+static constexpr int32_t ACRES_PERSON_WORK    = 10;
 static constexpr int32_t MAX_ROUNDS           = 10;
 // clang-format on
 
@@ -52,23 +60,22 @@ struct ValidationRule {
     }
 };
 
-void clearConsole(const char* str = "")
+void clearConsole(std::string_view str = "")
 {
     static constexpr const char* CSI = "\033[";
-    printf("%sH%s2J%s", CSI, CSI, str);
+    printf("%sH%s2J%s", CSI, CSI, str.data());
 }
 
 bool readValues(int32_t& buy_land, int32_t& wheat_to_eat, int32_t& to_sow) noexcept
 {
-    auto readNumber = [](const char* prompt, int32_t& result) -> bool {
+    auto readNumber = [](std::string_view prompt, int32_t& result) -> bool {
         std::string input;
         const int32_t max_value = std::numeric_limits<int32_t>::max();
         while (true) {
             std::cout << prompt;
             std::cout.flush();
             if (!std::getline(std::cin, input)) {
-                clearConsole("Critical error, my Lord!");
-                return false;
+                throw std::runtime_error{"input/output error!"};
             }
 
             if (input == "q" or input == "Q") {
@@ -120,50 +127,85 @@ bool readValues(int32_t& buy_land, int32_t& wheat_to_eat, int32_t& to_sow) noexc
 
     return res;
 }
+
+bool mayContinue(std::string_view prompt)
+{
+    clearConsole();
+
+    while (true) {
+        std::cout << prompt;
+
+        char ch;
+        if (std::cin >> ch) {
+            ch = std::tolower(static_cast<unsigned char>(ch));
+
+            // ignore other syms
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+            if (ch == 'y')
+                return true;
+            if (ch == 'n')
+                return false;
+        }
+        std::cout << std::endl;
+    }
+}
+
 } // namespace
 
 namespace jd
 {
 GameApplication::GameApplication(std::unique_ptr<IGameEventGenerator> generator)
-    : round_{std::move(generator)}
-    , town_ctx_{TOWN_CONTEXT_DEFAULT}
+    : town_ctx_{TOWN_CONTEXT_DEFAULT}
+    , generator_{std::move(generator)}
     , saves_manager_{std::make_shared<file::Backend>(ROOT_DIR "/saves/save.bin")}
 {
 }
 
-GameApplication::~GameApplication()
-{
-    save();
-}
-
 void GameApplication::run()
 {
-    bool is_ok{true};
-
-    if (!load() || town_ctx_.year == 0) {
-        town_ctx_  = TownContext{TOWN_CONTEXT_DEFAULT};
-        round_ctx_ = round_.generateInitRoundEvent();
+    if (load() && town_ctx_.year != 0) {
+        game_status_ = mayContinue("Хотите продолжить игру(y/n)? "sv) ? Status::INGAME : Status::PREPARE;
+    } else {
+        game_status_ = Status::PREPARE;
     }
 
-    while (town_ctx_.year <= MAX_ROUNDS && is_ok) {
-        render();
-        is_ok = update();
-    }
-
-    if (!is_ok) {
-        return;
-    }
-
-    if (town_ctx_.year == MAX_ROUNDS) {
-        // print stats and delete saves
-        final();
-        // zeroes saves
-        memset(&town_ctx_, 0, sizeof(TownContext));
-        memset(&round_ctx_, 0, sizeof(RoundContext));
+    // Main game Loop
+    while (true) {
+        switch (game_status_) {
+            case Status::PREPARE:
+                town_ctx_    = TownContext{TOWN_CONTEXT_DEFAULT};
+                round_ctx_   = generator_->generateInitRoundEvent();
+                game_status_ = Status::INGAME;
+                [[fallthrough]];
+            case Status::INGAME:
+                render();
+                update();
+                break;
+            case Status::FINAL:
+                std::memset(&town_ctx_, 0, sizeof(TownContext));
+                std::memset(&round_ctx_, 0, sizeof(RoundContext));
+                std::cin.get();
+                [[fallthrough]];
+            case Status::EXIT:
+                save();
+                clearConsole();
+                return;
+            case Status::LOSE:
+                clearConsole(replica_many_death);
+                game_status_ = Status::FINAL;
+                break;
+            case Status::WIN:
+                final();
+                game_status_ = Status::FINAL;
+                break;
+            default:
+                return;
+        }
     }
 }
 
-bool GameApplication::update()
+void GameApplication::update()
 {
     int32_t buy_land{};
     int32_t wheat_to_eat{};
@@ -172,14 +214,15 @@ bool GameApplication::update()
 
     while (true) {
         if (!readValues(buy_land, wheat_to_eat, land_to_sow)) {
-            return false;
+            game_status_ = Status::EXIT;
+            return;
         }
 
         total_wheat_req = buy_land * round_ctx_.land_price + wheat_to_eat + static_cast<int32_t>(land_to_sow * SOW_FACTOR);
 
         if (total_wheat_req >= std::numeric_limits<int32_t>::max() || total_wheat_req > town_ctx_.wheat_bushels ||
             wheat_to_eat > (WHEAT_PERSON_EAT * town_ctx_.population) || land_to_sow > (town_ctx_.land_acres + buy_land) ||
-            land_to_sow > (WHEAT_PERSON_PRODUCE * town_ctx_.population)) {
+            land_to_sow > (ACRES_PERSON_WORK * town_ctx_.population)) {
             std::cout << std::format(replica_fail, town_ctx_.population, town_ctx_.wheat_bushels, town_ctx_.land_acres) << std::endl;
             continue;
         }
@@ -191,24 +234,30 @@ bool GameApplication::update()
         town_ctx_.fear_and_hunder_deaths_this_year = (need_wheat_to_eat - wheat_to_eat) / WHEAT_PERSON_EAT;
     }
 
-    if (static_cast<float>(town_ctx_.fear_and_hunder_deaths_this_year) / static_cast<float>(town_ctx_.population) > END_GAME_DEATHS_COEFF) {
-        return true;
+    const float deaths_stat = static_cast<float>(town_ctx_.fear_and_hunder_deaths_this_year) / static_cast<float>(town_ctx_.population);
+    if (deaths_stat > END_GAME_DEATHS_COEFF) {
+        game_status_ = Status::LOSE;
+        return;
     }
 
-    // TODO: fix problem with harvest. That is all!
     town_ctx_.wheat_bushels -= total_wheat_req;
-    town_ctx_.fear_and_hunder_deaths_mean += static_cast<float>(town_ctx_.fear_and_hunder_deaths_this_year) / static_cast<float>(town_ctx_.population);
+    town_ctx_.fear_and_hunder_deaths_mean += deaths_stat;
     town_ctx_.population -= town_ctx_.fear_and_hunder_deaths_this_year;
     town_ctx_.land_acres += buy_land;
     town_ctx_.wheat_harvested_this_year = land_to_sow * round_ctx_.wheat_yield;
     town_ctx_.wheat_bushels += town_ctx_.wheat_harvested_this_year;
+    town_ctx_.wheat_yield_per_acre = round_ctx_.wheat_yield;
 
-    round_ctx_ = round_.generateRoundEvent(town_ctx_);
+    round_ctx_ = generator_->generateRoundEvent(town_ctx_);
+
     town_ctx_.wheat_bushels -= round_ctx_.rats_damage;
     town_ctx_.population = town_ctx_.population + round_ctx_.new_citizens - round_ctx_.plague_deaths;
 
     ++town_ctx_.year;
-    return true;
+
+    if (town_ctx_.year > MAX_ROUNDS) {
+        game_status_ = Status::WIN;
+    }
 }
 
 bool GameApplication::save()
@@ -239,16 +288,19 @@ bool GameApplication::load()
 void GameApplication::render()
 {
     clearConsole();
-    const char* plague_info = round_ctx_.plague_occurred ? "уничтожила половину населения" : "обошла нас стороной";
+
+    const std::string_view plague_info = round_ctx_.plague_occurred ? "уничтожила половину населения"sv : "обошла нас стороной"sv;
 
     std::cout << std::format(
                      the_seneschal_says,
+                     WHEAT_PERSON_EAT,
+                     ACRES_PERSON_WORK,
                      town_ctx_.year,
                      town_ctx_.fear_and_hunder_deaths_this_year,
                      round_ctx_.new_citizens,
                      plague_info,
                      town_ctx_.wheat_harvested_this_year,
-                     round_ctx_.wheat_yield,
+                     town_ctx_.wheat_yield_per_acre,
                      round_ctx_.rats_damage,
                      town_ctx_.wheat_bushels,
                      town_ctx_.land_acres,
@@ -261,9 +313,9 @@ void GameApplication::render()
 
 void GameApplication::final()
 {
-    using namespace std::literals::string_view_literals;
+    clearConsole();
 
-    static constexpr ValidationRule rules[] = {
+    static constinit const ValidationRule rules[] = {
         ValidationRule{
             +[](float P, int32_t L) noexcept { return P > 0.33f && L < 7; },
             "Из-за вашей некомпетентности в управлении, народ устроил бунт и изгнал вас из города.\nТеперь вы вынуждены влачить жалкое существование в изгнании."sv},
@@ -284,8 +336,6 @@ void GameApplication::final()
             break;
         }
     }
-
-    std::cin.get();
 }
 
 } // namespace jd
