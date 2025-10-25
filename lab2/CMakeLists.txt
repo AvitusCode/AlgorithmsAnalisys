@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(PROJECT_NAME lab2)
+set(PROJECT_NAME lab23)
 
 project(${PROJECT_NAME} VERSION 1.0 LANGUAGES CXX)
 
@@ -26,8 +26,13 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Test
+# Tests
 add_executable(array_test array_test.cpp)
 target_include_directories(array_test PUBLIC include)
 target_link_libraries(array_test gtest_main)
 add_test(NAME array_test COMMAND array_test)
+
+add_executable(sort_test sort_test.cpp)
+target_include_directories(sort_test PUBLIC include)
+target_link_libraries(sort_test gtest_main)
+add_test(NAME sort_test COMMAND sort_test)
