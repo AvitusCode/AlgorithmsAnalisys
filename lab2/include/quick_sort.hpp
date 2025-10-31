@@ -7,9 +7,6 @@
 
 namespace jd
 {
-template <typename RandomIt, typename Compare>
-concept Sortable = std::random_access_iterator<RandomIt> && std::sortable<RandomIt, Compare>;
-
 template <typename RandomIt>
 RandomIt selectPivot(RandomIt first, RandomIt last)
 {
@@ -63,7 +60,6 @@ RandomIt partitionHoare(RandomIt first, RandomIt last, Compare cmp)
 
 template <typename RandomIt, typename Compare = std::less<typename std::iterator_traits<RandomIt>::value_type>>
 void insertionSort(RandomIt first, RandomIt last, Compare cmp = Compare{})
-// requires Sortable<RandomIt, Compare>
 {
     using DistT = typename std::iterator_traits<RandomIt>::difference_type;
 
@@ -95,7 +91,6 @@ void insertionSort(RandomIt first, RandomIt last, Compare cmp = Compare{})
 
 template <typename RandomIt, typename Compare = std::less<typename std::iterator_traits<RandomIt>::value_type>>
 void sort(RandomIt first, RandomIt last, Compare cmp = {})
-// requires Sortable<RandomIt, Compare>
 {
     while (last - first > 1) {
 #ifdef JD_TEST
