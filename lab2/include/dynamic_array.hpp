@@ -115,30 +115,22 @@ public:
             reallocate(capacity_ * ALLOCATE_FACTOR);
         }
 
-        if constexpr (std::is_move_constructible_v<T> && std::is_move_assignable_v<T>) {
-            if (index < size_) {
+        if (index < size_) {
+            if constexpr (std::is_move_constructible_v<T> && std::is_move_assignable_v<T>) {
                 std::construct_at(buffer_ + size_, std::move(buffer_[size_ - 1]));
-
                 for (int i = size_ - 1; i > index; --i) {
                     buffer_[i] = std::move(buffer_[i - 1]);
                 }
-
-                buffer_[index] = value;
             } else {
-                std::construct_at(buffer_ + index, value);
-            }
-        } else {
-            if (index < size_) {
                 std::construct_at(buffer_ + size_, buffer_[size_ - 1]);
-
                 for (int i = size_ - 1; i > index; --i) {
                     buffer_[i] = buffer_[i - 1];
                 }
-
-                buffer_[index] = value;
-            } else {
-                std::construct_at(buffer_ + index, value);
             }
+
+            buffer_[index] = value;
+        } else {
+            std::construct_at(buffer_ + index, value);
         }
 
         ++size_;
@@ -151,12 +143,10 @@ public:
 
         std::destroy_at(buffer_ + index);
 
-        if constexpr (std::is_move_assignable_v<T>) {
-            for (int i = index, size = size_ - 1; i < size; ++i) {
+        for (int i = index, size = size_ - 1; i < size; ++i) {
+            if constexpr (std::is_move_assignable_v<T>) {
                 buffer_[i] = std::move(buffer_[i + 1]);
-            }
-        } else {
-            for (int i = index, size = size_ - 1; i < size; ++i) {
+            } else {
                 buffer_[i] = buffer_[i + 1];
             }
         }
@@ -192,7 +182,7 @@ public:
 private:
     void reallocate(int new_capacity)
     {
-        if (new_capacity <= capacity_)
+        if (new_capacity <= capacity_) [[unlikely]]
             return;
 
         T* new_buffer = static_cast<T*>(malloc(new_capacity * sizeof(T)));
@@ -202,16 +192,13 @@ private:
 
         int size{};
         try {
-            if constexpr (std::is_nothrow_move_constructible_v<T>) {
-                for (int i = 0; i < size_; ++i) {
+            for (int i = 0; i < size_; ++i) {
+                if constexpr (std::is_nothrow_move_constructible_v<T>) {
                     std::construct_at(new_buffer + i, std::move(buffer_[i]));
-                    ++size;
-                }
-            } else {
-                for (int i = 0; i < size_; ++i) {
+                } else {
                     std::construct_at(new_buffer + i, buffer_[i]);
-                    ++size;
                 }
+                ++size;
             }
         } catch (...) {
             std::destroy(new_buffer, new_buffer + size);
@@ -230,9 +217,6 @@ private:
     template <bool Const, bool Reverse>
     class Iterator
     {
-        friend class Iterator<!Const, Reverse>;
-        friend class Iterator<Const, !Reverse>;
-
         using data_pointer = std::conditional_t<Const, const T*, T*>;
 
         data_pointer start_ptr_;
