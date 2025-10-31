@@ -16,12 +16,13 @@ protected:
 
     void TearDown() override {}
 
-    Array<int> arr_;
+    Array<int> arr_ = Array<int>(3);
 };
 
 TEST_F(ArrayTest, BasicOperations)
 {
     EXPECT_EQ(arr_.size(), 3);
+    EXPECT_EQ(arr_.capacity(), 3);
     EXPECT_EQ(arr_[0], 1);
     EXPECT_EQ(arr_[1], 2);
     EXPECT_EQ(arr_[2], 3);
@@ -117,13 +118,14 @@ TEST_F(ArrayTest, MoveAssignment)
 
 TEST_F(ArrayTest, Reallocation)
 {
-    Array<int> small_arr(2);
-    small_arr.insert(1);
-    small_arr.insert(2);
-    int old_capacity = small_arr.capacity();
-    small_arr.insert(3);
-    EXPECT_GT(small_arr.capacity(), old_capacity);
-    EXPECT_EQ(small_arr.size(), 3);
+    int old_capacity = arr_.capacity();
+    arr_.insert(33);
+    EXPECT_GT(arr_.capacity(), old_capacity);
+    EXPECT_EQ(arr_.size(), 4);
+    EXPECT_EQ(arr_[0], 1);
+    EXPECT_EQ(arr_[1], 2);
+    EXPECT_EQ(arr_[2], 3);
+    EXPECT_EQ(arr_[3], 33);
 }
 
 TEST(ArrayEmptyTest, EmptyArray)
@@ -149,7 +151,7 @@ struct TestStruct {
     std::string name;
     TestStruct(int i = 0, std::string n = "")
         : id{i}
-        , name{n}
+        , name{std::move(n)}
     {
     }
 

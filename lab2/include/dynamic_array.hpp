@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdlib>
+#include <initializer_list>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -20,6 +21,14 @@ public:
     Array()
         : Array(DEFAULT_CAPACITY)
     {
+    }
+
+    Array(std::initializer_list<T> init)
+        : Array(init.size())
+    {
+        for (const T& elem : init) {
+            insert(elem);
+        }
     }
 
     explicit Array(int capacity)
@@ -143,11 +152,11 @@ public:
         std::destroy_at(buffer_ + index);
 
         if constexpr (std::is_move_assignable_v<T>) {
-            for (int i = index; i < size_ - 1; ++i) {
+            for (int i = index, size = size_ - 1; i < size; ++i) {
                 buffer_[i] = std::move(buffer_[i + 1]);
             }
         } else {
-            for (int i = index; i < size_ - 1; ++i) {
+            for (int i = index, size = size_ - 1; i < size; ++i) {
                 buffer_[i] = buffer_[i + 1];
             }
         }
@@ -226,16 +235,16 @@ private:
 
         using data_pointer = std::conditional_t<Const, const T*, T*>;
 
-        const data_pointer start_ptr_;
+        data_pointer start_ptr_;
         data_pointer ptr_;
         int size_;
 
     public:
         using difference_type   = std::ptrdiff_t;
-        using value_type        = T;
+        using value_type        = std::remove_cv_t<T>;
         using pointer           = data_pointer;
         using reference         = std::conditional_t<Const, const T&, T&>;
-        using iterator_category = std::forward_iterator_tag;
+        using iterator_category = std::random_access_iterator_tag;
 
         Iterator(data_pointer start_ptr, data_pointer ptr, int size)
             : start_ptr_{start_ptr}
@@ -243,6 +252,11 @@ private:
             , size_{size}
         {
         }
+
+        Iterator()
+            : Iterator(nullptr, nullptr, 0) {};
+        Iterator(const Iterator&)            = default;
+        Iterator& operator=(const Iterator&) = default;
 
         reference get() const
         {
@@ -264,6 +278,15 @@ private:
             }
         }
 
+        void prev() noexcept
+        {
+            if constexpr (Reverse) {
+                ++ptr_;
+            } else {
+                --ptr_;
+            }
+        }
+
         bool hasNext() const noexcept
         {
             if constexpr (Reverse) {
@@ -273,14 +296,42 @@ private:
             }
         }
 
+        bool hasPrev() const noexcept
+        {
+            if constexpr (Reverse) {
+                return ptr_ < start_ptr_ + size_ - 1;
+            } else {
+                return ptr_ > start_ptr_;
+            }
+        }
+
         reference operator*() const
         {
             return *ptr_;
         }
 
-        pointer operator->() const
+        pointer operator->() const noexcept
         {
             return ptr_;
+        }
+
+        reference operator[](difference_type index) const
+        {
+            if constexpr (Reverse) {
+                return *(ptr_ - index);
+            } else {
+                return *(ptr_ + index);
+            }
+        }
+
+        reference operator[](difference_type index)
+        requires(!Const)
+        {
+            if constexpr (Reverse) {
+                return *(ptr_ - index);
+            } else {
+                return *(ptr_ + index);
+            }
         }
 
         Iterator& operator++() noexcept
@@ -296,11 +347,85 @@ private:
             return temp;
         }
 
-        bool operator==(const Iterator& other) const = default;
-        bool operator!=(const Iterator& other) const = default;
+        Iterator& operator--() noexcept
+        {
+            prev();
+            return *this;
+        }
 
-        Iterator(const Iterator<false, Reverse>& other)
-        requires Const
+        Iterator operator--(int) noexcept
+        {
+            Iterator temp{*this};
+            prev();
+            return temp;
+        }
+
+        Iterator& operator+=(difference_type n) noexcept
+        {
+            if constexpr (Reverse) {
+                ptr_ -= n;
+            } else {
+                ptr_ += n;
+            }
+            return *this;
+        }
+
+        Iterator& operator-=(difference_type n) noexcept
+        {
+            return *this += -n;
+        }
+
+        Iterator operator+(difference_type n) const noexcept
+        {
+            Iterator temp{*this};
+            return temp += n;
+        }
+
+        Iterator operator-(difference_type n) const noexcept
+        {
+            Iterator temp{*this};
+            return temp -= n;
+        }
+
+        difference_type operator-(const Iterator& other) const noexcept
+        {
+            if constexpr (Reverse) {
+                return other.ptr_ - ptr_;
+            } else {
+                return ptr_ - other.ptr_;
+            }
+        }
+
+        bool operator<(const Iterator& other) const noexcept
+        {
+            if constexpr (Reverse) {
+                return ptr_ > other.ptr_;
+            } else {
+                return ptr_ < other.ptr_;
+            }
+        }
+
+        bool operator>(const Iterator& other) const noexcept
+        {
+            return other < *this;
+        }
+
+        bool operator<=(const Iterator& other) const noexcept
+        {
+            return !(other < *this);
+        }
+
+        bool operator>=(const Iterator& other) const noexcept
+        {
+            return !(*this < other);
+        }
+
+        bool operator==(const Iterator&) const = default;
+        bool operator!=(const Iterator&) const = default;
+
+        template <bool OtherConst, bool OtherReverse>
+        Iterator(const Iterator<OtherConst, OtherReverse>& other)
+        requires(Const || !OtherConst)
             : start_ptr_{other.start_ptr_}
             , ptr_{other.ptr_}
             , size_{other.size_}

@@ -1,3 +1,4 @@
+#include "dynamic_array.hpp"
 #include "quick_sort.hpp"
 
 #include <algorithm>
@@ -125,6 +126,16 @@ TEST_F(SortTest, LambdaComparator)
     jd::sort(vec.begin(), vec.end(), cmp);
     std::vector<int> expected = {5, 4, 3, 2, 1};
     EXPECT_EQ(vec, expected);
+}
+
+TEST(DynamicArrayTest, RandomArray)
+{
+    jd::Array<int> arr      = {3, 1, 4, 1, 5, 9, 2, 6};
+    jd::Array<int> expected = {1, 1, 2, 3, 4, 5, 6, 9};
+    jd::sort(arr.begin(), arr.end());
+    for (int i = 0; i < arr.size(); ++i) {
+        EXPECT_EQ(arr[i], expected[i]);
+    }
 }
 
 int main(int argc, char** argv)
