@@ -22,9 +22,11 @@ template <bool IsQuick>
 void benchmarkSort(size_t size, size_t num_runs = 1000)
 {
     double total_time{};
+    const auto generatedArr = generateArray(size);
+    auto arr                = generatedArr;
 
     for (size_t run = 0; run <= num_runs; ++run) {
-        auto arr   = generateArray(size);
+        auto arr   = generatedArr;
         auto start = std::chrono::high_resolution_clock::now();
         if constexpr (IsQuick) {
             jd::sort(arr.begin(), arr.end());
@@ -44,7 +46,7 @@ void benchmarkSort(size_t size, size_t num_runs = 1000)
         }
     }
 
-    double average_time = total_time / num_runs;
+    const double average_time = total_time / num_runs;
     std::cout << static_cast<long>(average_time) << std::endl;
 }
 

@@ -225,7 +225,7 @@ private:
 
     public:
         using difference_type   = std::ptrdiff_t;
-        using value_type        = std::remove_cv_t<T>;
+        using value_type        = T;
         using pointer           = data_pointer;
         using reference         = std::conditional_t<Const, const T&, T&>;
         using iterator_category = std::random_access_iterator_tag;
@@ -359,10 +359,15 @@ private:
             return *this += -n;
         }
 
-        Iterator operator+(difference_type n) const noexcept
+        friend Iterator operator+(const Iterator& it, difference_type n) noexcept
         {
-            Iterator temp{*this};
+            Iterator temp{it};
             return temp += n;
+        }
+
+        friend Iterator operator+(difference_type n, const Iterator& it) noexcept
+        {
+            return it + n;
         }
 
         Iterator operator-(difference_type n) const noexcept
@@ -404,8 +409,15 @@ private:
             return !(*this < other);
         }
 
-        bool operator==(const Iterator&) const = default;
-        bool operator!=(const Iterator&) const = default;
+        bool operator==(const Iterator& other) const noexcept
+        {
+            return ptr_ == other.ptr_;
+        }
+
+        bool operator!=(const Iterator& other) const noexcept
+        {
+            return !(*this == other);
+        }
 
         template <bool OtherConst, bool OtherReverse>
         Iterator(const Iterator<OtherConst, OtherReverse>& other)

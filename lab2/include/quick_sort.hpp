@@ -1,30 +1,35 @@
+#include <concepts>
 #include <functional>
 #include <iterator>
 #include <utility>
 
-#define INSERTION_THRESHOLD 16
+#define INSERTION_THRESHOLD 377
 #define JD_TEST
 
 namespace jd
 {
-template <typename RandomIt>
-RandomIt selectPivot(RandomIt first, RandomIt last)
+template <typename It, typename Compare>
+concept Sortable = std::random_access_iterator<It> && std::invocable<Compare, std::iter_value_t<It>, std::iter_value_t<It>> &&
+                   std::predicate<Compare, std::iter_value_t<It>, std::iter_value_t<It>>;
+
+template <typename RandomIt, typename Compare>
+RandomIt selectPivot(RandomIt first, RandomIt last, const Compare& cmp)
 {
     RandomIt mid       = first + (last - first) / 2;
     RandomIt last_iter = last - 1;
 
     if (*first < *mid) {
-        if (*mid < *last_iter) {
+        if (cmp(*mid, *last_iter)) {
             return mid;
-        } else if (*first < *last_iter) {
+        } else if (cmp(*first, *last_iter)) {
             return last_iter;
         }
 
         return first;
     } else {
-        if (*last_iter < *mid) {
+        if (cmp(*last_iter, *mid)) {
             return mid;
-        } else if (*last_iter < *first) {
+        } else if (cmp(*last_iter, *first)) {
             return last_iter;
         }
 
@@ -33,9 +38,9 @@ RandomIt selectPivot(RandomIt first, RandomIt last)
 }
 
 template <typename RandomIt, typename Compare>
-RandomIt partitionHoare(RandomIt first, RandomIt last, Compare cmp)
+RandomIt partitionHoare(RandomIt first, RandomIt last, const Compare& cmp)
 {
-    RandomIt pivot_it = selectPivot(first, last);
+    RandomIt pivot_it = selectPivot(first, last, cmp);
     auto pivot        = *pivot_it;
 
     RandomIt left  = first - 1;
@@ -58,7 +63,8 @@ RandomIt partitionHoare(RandomIt first, RandomIt last, Compare cmp)
     }
 }
 
-template <typename RandomIt, typename Compare = std::less<typename std::iterator_traits<RandomIt>::value_type>>
+template <typename RandomIt, typename Compare = std::less<std::iter_value_t<RandomIt>>>
+requires Sortable<RandomIt, Compare>
 void insertionSort(RandomIt first, RandomIt last, Compare cmp = Compare{})
 {
     using DistT = typename std::iterator_traits<RandomIt>::difference_type;
@@ -89,7 +95,8 @@ void insertionSort(RandomIt first, RandomIt last, Compare cmp = Compare{})
     }
 }
 
-template <typename RandomIt, typename Compare = std::less<typename std::iterator_traits<RandomIt>::value_type>>
+template <typename RandomIt, typename Compare = std::less<std::iter_value_t<RandomIt>>>
+requires Sortable<RandomIt, Compare>
 void sort(RandomIt first, RandomIt last, Compare cmp = {})
 {
     while (last - first > 1) {
