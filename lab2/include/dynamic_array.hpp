@@ -116,18 +116,10 @@ public:
         }
 
         if (index < size_) {
-            if constexpr (std::is_move_constructible_v<T> && std::is_move_assignable_v<T>) {
-                std::construct_at(buffer_ + size_, std::move(buffer_[size_ - 1]));
-                for (int i = size_ - 1; i > index; --i) {
-                    buffer_[i] = std::move(buffer_[i - 1]);
-                }
-            } else {
-                std::construct_at(buffer_ + size_, buffer_[size_ - 1]);
-                for (int i = size_ - 1; i > index; --i) {
-                    buffer_[i] = buffer_[i - 1];
-                }
+            std::construct_at(buffer_ + size_, std::move_if_noexcept(buffer_[size_ - 1]));
+            for (int i = size_ - 1; i > index; --i) {
+                buffer_[i] = std::move_if_noexcept(buffer_[i - 1]);
             }
-
             buffer_[index] = value;
         } else {
             std::construct_at(buffer_ + index, value);
@@ -144,11 +136,7 @@ public:
         std::destroy_at(buffer_ + index);
 
         for (int i = index, size = size_ - 1; i < size; ++i) {
-            if constexpr (std::is_move_assignable_v<T>) {
-                buffer_[i] = std::move(buffer_[i + 1]);
-            } else {
-                buffer_[i] = buffer_[i + 1];
-            }
+            buffer_[i] = std::move_if_noexcept(buffer_[i + 1]);
         }
 
         --size_;
@@ -193,11 +181,7 @@ private:
         int size{};
         try {
             for (int i = 0; i < size_; ++i) {
-                if constexpr (std::is_nothrow_move_constructible_v<T>) {
-                    std::construct_at(new_buffer + i, std::move(buffer_[i]));
-                } else {
-                    std::construct_at(new_buffer + i, buffer_[i]);
-                }
+                std::construct_at(new_buffer + i, std::move_if_noexcept(buffer_[i]));
                 ++size;
             }
         } catch (...) {
