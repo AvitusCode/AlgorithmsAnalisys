@@ -13,7 +13,7 @@ def measure_sort_time(sort_function : str, array_size : int, num_tests=3, num_pr
                 sort_function,
                 str(array_size),
                 str(num_probes)
-            ], capture_output=True, text=True, timeout=30)
+            ], capture_output=True, text=True, timeout=5000)
 
             if result.returncode == 0:
                 time_us = int(result.stdout.strip())
@@ -44,8 +44,8 @@ def find_intersection_point():
     print("-" * 40)
 
     for size in sizes:
-        quick_time = measure_sort_time("quicksort", size, 5)
-        insertion_time = measure_sort_time("insertionsort", size, 5)
+        quick_time = measure_sort_time("quicksort", size)
+        insertion_time = measure_sort_time("insertionsort", size)
 
         if quick_time < float('inf') and insertion_time < float('inf'):
             quick_times.append(quick_time)
@@ -70,6 +70,9 @@ def find_intersection_point():
                 intersection_size = (y1_q - y1_i) / (m_i - m_q) + x1
                 break
 
+    valid_sizes = valid_sizes[:len(valid_sizes) - 1]
+    quick_times = quick_times[:len(quick_times) - 1]
+    insertion_times = insertion_times[:len(insertion_times) - 1]
     plt.figure(figsize=(12, 8))
     plt.plot(valid_sizes, quick_times, 'b-', linewidth=2, marker='o', label='QuickSort')
     plt.plot(valid_sizes, insertion_times, 'r-', linewidth=2, marker='s', label='Insertion Sort')

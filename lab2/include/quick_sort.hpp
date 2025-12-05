@@ -3,7 +3,7 @@
 #include <iterator>
 #include <utility>
 
-#define INSERTION_THRESHOLD 377
+#define INSERTION_THRESHOLD 35
 #define JD_TEST
 
 namespace jd
@@ -16,7 +16,7 @@ template <typename RandomIt, typename Compare>
 RandomIt selectPivot(RandomIt first, RandomIt last, const Compare& cmp)
 {
     RandomIt mid       = first + (last - first) / 2;
-    RandomIt last_iter = last - 1;
+    RandomIt last_iter = std::prev(last);
 
     if (*first < *mid) {
         if (cmp(*mid, *last_iter)) {
@@ -43,7 +43,7 @@ RandomIt partitionHoare(RandomIt first, RandomIt last, const Compare& cmp)
     RandomIt pivot_it = selectPivot(first, last, cmp);
     auto pivot        = *pivot_it;
 
-    RandomIt left  = first - 1;
+    RandomIt left  = std::prev(first);
     RandomIt right = last;
 
     while (true) {
@@ -67,31 +67,24 @@ template <typename RandomIt, typename Compare = std::less<std::iter_value_t<Rand
 requires Sortable<RandomIt, Compare>
 void insertionSort(RandomIt first, RandomIt last, Compare cmp = Compare{})
 {
-    using DistT = typename std::iterator_traits<RandomIt>::difference_type;
-
-    const DistT dist = last - first;
-    if (dist <= 1)
+    if (first == last) [[unlikely]]
         return;
 
-    // first "min" element optimization
-    RandomIt min_it = first;
-    for (RandomIt it = first + 1; it != last; ++it) {
-        if (cmp(*it, *min_it)) {
-            min_it = it;
-        }
-    }
-    std::iter_swap(first, min_it);
+    for (RandomIt it = std::next(first); it != last; ++it) {
+        auto temp          = std::move(*it);
+        RandomIt shift_pos = it;
 
-    for (DistT i = 2; i < dist; ++i) {
-        auto key = std::move(first[i]);
-        DistT j  = i;
+        while (shift_pos != first) {
+            RandomIt prev_pos = shift_pos - 1;
+            if (!cmp(temp, *prev_pos)) {
+                break;
+            }
 
-        while (cmp(key, first[j - 1])) {
-            std::iter_swap(first + j, first + j - 1);
-            --j;
+            *shift_pos = std::move(*prev_pos);
+            shift_pos  = prev_pos;
         }
 
-        first[j] = std::move(key);
+        *shift_pos = std::move(temp);
     }
 }
 
@@ -113,14 +106,14 @@ void sort(RandomIt first, RandomIt last, Compare cmp = {})
             return;
         }
 #endif
-        RandomIt pivot = partitionHoare(first, last, cmp);
+        RandomIt pivot_it = partitionHoare(first, last, cmp);
 
-        if (pivot - first < last - (pivot + 1)) {
-            jd::sort(first, pivot + 1, cmp);
-            first = pivot + 1;
+        if (pivot_it - first < last - (pivot_it + 1)) {
+            jd::sort(first, pivot_it + 1, cmp);
+            first = pivot_it + 1;
         } else {
-            jd::sort(pivot + 1, last, cmp);
-            last = pivot + 1;
+            jd::sort(pivot_it + 1, last, cmp);
+            last = pivot_it + 1;
         }
     }
 }

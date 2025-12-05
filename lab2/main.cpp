@@ -18,11 +18,18 @@ std::vector<int> generateArray(size_t size)
     return arr;
 }
 
+std::vector<int> generateDecreasingArray(size_t start)
+{
+    std::vector<int> arr(start);
+    std::generate(arr.begin(), arr.end(), [start = static_cast<int>(start)]() mutable { return start--; });
+    return arr;
+}
+
 template <bool IsQuick>
 void benchmarkSort(size_t size, size_t num_runs = 1000)
 {
     double total_time{};
-    const auto generatedArr = generateArray(size);
+    const auto generatedArr = generateDecreasingArray(size);
     auto arr                = generatedArr;
 
     for (size_t run = 0; run <= num_runs; ++run) {

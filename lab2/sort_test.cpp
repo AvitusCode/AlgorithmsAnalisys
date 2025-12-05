@@ -25,6 +25,20 @@ TEST_F(SortTest, EmptyArray)
     EXPECT_TRUE(vec.empty());
 }
 
+TEST_F(SortTest, InsertionTest)
+{
+    std::vector<int> vec      = {5, 4, 2, 3, 1};
+    std::vector<int> expected = {1, 2, 3, 4, 5};
+    jd::insertionSort(vec.begin(), vec.end());
+    EXPECT_EQ(vec, expected);
+
+    vec = std::vector<int>{3, 2, 5, 4, 1};
+    jd::insertionSort(vec.begin(), vec.end(), +[](int lhs, int rhs) noexcept { return lhs > rhs; });
+
+    std::reverse(expected.begin(), expected.end());
+    EXPECT_EQ(vec, expected);
+}
+
 TEST_F(SortTest, SingleElement)
 {
     std::vector<int> vec = {42};

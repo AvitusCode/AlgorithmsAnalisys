@@ -42,8 +42,10 @@ public:
 
     ~Array() noexcept(std::is_nothrow_destructible_v<T>)
     {
-        std::destroy(buffer_, buffer_ + size_);
-        free(buffer_);
+        if (buffer_) {
+            destroy(buffer_, size_);
+            free(buffer_);
+        }
     }
 
     Array(const Array& other)
@@ -58,14 +60,15 @@ public:
         int size{};
         try {
             for (int i = 0; i < size_; ++i) {
-                std::construct_at(buffer_ + i, other.buffer_[i]);
+                ::new (&buffer_[i]) T(other.buffer_[i]);
                 ++size;
             }
         } catch (...) {
             if (size) {
-                std::destroy(buffer_, buffer_ + size);
+                destroy(buffer_, size);
             }
             free(buffer_);
+            buffer_ = nullptr;
             throw;
         }
     }
@@ -92,7 +95,7 @@ public:
     Array& operator=(Array&& other) noexcept(std::is_nothrow_destructible_v<T>)
     {
         if (this != std::addressof(other)) {
-            std::destroy(buffer_, buffer_ + size_);
+            destroy(buffer_, size_);
             free(buffer_);
 
             buffer_   = std::exchange(other.buffer_, nullptr);
@@ -116,13 +119,13 @@ public:
         }
 
         if (index < size_) {
-            std::construct_at(buffer_ + size_, std::move_if_noexcept(buffer_[size_ - 1]));
+            ::new (&buffer_[size_]) T(move_if_noexcept(buffer_[size_ - 1]));
             for (int i = size_ - 1; i > index; --i) {
-                buffer_[i] = std::move_if_noexcept(buffer_[i - 1]);
+                buffer_[i] = move_if_noexcept(buffer_[i - 1]);
             }
             buffer_[index] = value;
         } else {
-            std::construct_at(buffer_ + index, value);
+            ::new (&buffer_[index]) T(value);
         }
 
         ++size_;
@@ -133,16 +136,19 @@ public:
     {
         assert(index >= 0 && index < size_);
 
-        std::destroy_at(buffer_ + index);
-
-        for (int i = index, size = size_ - 1; i < size; ++i) {
-            buffer_[i] = std::move_if_noexcept(buffer_[i + 1]);
+        if (index == size_ - 1) {
+            buffer_[index].~T();
+            --size_;
+            return;
         }
+
+        for (int i = index + 1; i < size_; ++i) {
+            buffer_[i - 1] = move_if_noexcept(buffer_[i]);
+        }
+
+        buffer_[size_ - 1].~T();
 
         --size_;
-        if (size_ > 0) {
-            std::destroy_at(buffer_ + size_);
-        }
     }
 
     const T& operator[](int index) const
@@ -181,20 +187,33 @@ private:
         int size{};
         try {
             for (int i = 0; i < size_; ++i) {
-                std::construct_at(new_buffer + i, std::move_if_noexcept(buffer_[i]));
+                ::new (&new_buffer[i]) T(move_if_noexcept(buffer_[i]));
                 ++size;
             }
         } catch (...) {
-            std::destroy(new_buffer, new_buffer + size);
+            destroy(new_buffer, size);
             free(new_buffer);
             throw;
         }
 
-        std::destroy(buffer_, buffer_ + size_);
+        destroy(buffer_, size_);
         free(buffer_);
 
         buffer_   = new_buffer;
         capacity_ = new_capacity;
+    }
+
+    void destroy(T* buffer, int size) noexcept(std::is_nothrow_destructible_v<T>)
+    {
+        for (int i = 0; i < size; ++i) {
+            buffer[i].~T();
+        }
+    }
+
+    constexpr std::conditional_t<!std::is_nothrow_move_constructible_v<T> && std::is_copy_constructible_v<T>, const T&, T&&> //
+    move_if_noexcept(T& t) noexcept
+    {
+        return std::move(t);
     }
 
 private:

@@ -320,6 +320,33 @@ TEST_F(ArrayTest, SetAfterMultipleOperations)
     EXPECT_EQ(arr_[2], 30);
 }
 
+TEST(ArrayTestSithStrings, SimpleStrings)
+{
+    Array<std::string> arr;
+    std::vector<std::string> expected;
+    expected.reserve(20);
+    for (size_t i{}; i < 20; ++i) {
+        std::string test = std::to_string(i) + " and some text";
+        arr.insert(test);
+        if (i != 1 && i != 2 && i != 18)
+            expected.push_back(std::move(test));
+        else if (i == 1)
+            expected.push_back("some new text");
+    }
+
+    EXPECT_EQ(arr.size(), 20);
+
+    arr.remove(1);
+    arr.remove(1);
+    arr.remove(16);
+
+    arr.insert(1, std::string{"some new text"});
+    EXPECT_EQ(arr.size(), expected.size());
+    for (size_t i{}; (signed)i < arr.size(); ++i) {
+        EXPECT_EQ(arr[i], expected[i]);
+    }
+}
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
