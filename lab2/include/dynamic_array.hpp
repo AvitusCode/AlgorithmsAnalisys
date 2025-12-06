@@ -121,9 +121,11 @@ public:
         if (index < size_) {
             ::new (&buffer_[size_]) T(move_if_noexcept(buffer_[size_ - 1]));
             for (int i = size_ - 1; i > index; --i) {
-                buffer_[i] = move_if_noexcept(buffer_[i - 1]);
+                buffer_[i].~T();
+                ::new (&buffer_[i]) T(move_if_noexcept(buffer_[i - 1]));
             }
-            buffer_[index] = value;
+            buffer_[index].~T();
+            ::new (&buffer_[index]) T(value);
         } else {
             ::new (&buffer_[index]) T(value);
         }
@@ -136,14 +138,9 @@ public:
     {
         assert(index >= 0 && index < size_);
 
-        if (index == size_ - 1) {
-            buffer_[index].~T();
-            --size_;
-            return;
-        }
-
         for (int i = index + 1; i < size_; ++i) {
-            buffer_[i - 1] = move_if_noexcept(buffer_[i]);
+            buffer_[i - 1].~T();
+            ::new (&buffer_[i - 1]) T(move_if_noexcept(buffer_[i]));
         }
 
         buffer_[size_ - 1].~T();
