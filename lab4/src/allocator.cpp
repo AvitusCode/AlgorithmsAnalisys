@@ -1,5 +1,6 @@
 #include "allocator.hpp"
 
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -20,12 +21,15 @@ static constexpr size_t LARGE_ALLOC_THRESHOLD = 10_MB;
 static constexpr size_t SMALL_REGION_MAX  = 10_KB;
 static constexpr size_t MEDIUM_REGION_MAX = 1_MB;
 
-static constexpr size_t REGION_SIZE          = 32_MB;
-static constexpr size_t MAX_REGIONS          = 16;
-static constexpr size_t REGION_COUNT_BY_TYPE = 3;
-static constexpr size_t FSA_ARENA_SIZE       = 16_MB;
-static constexpr size_t METADATA_SIZE        = 64_MB;
-static constexpr size_t TOTAL_VIRTUAL_MEMORY = MAX_REGIONS * REGION_SIZE + FSA_ARENA_SIZE + METADATA_SIZE + PAGE_SIZE * 2;
+static constexpr size_t REGION_SIZE                = 32_MB;
+static constexpr size_t MAX_REGIONS                = 16;
+static constexpr size_t REGION_COUNT_BY_TYPE       = 3;
+static constexpr size_t FSA_ARENA_SIZE             = 24_MB;
+static constexpr size_t METADATA_SIZE              = 64_MB;
+static constexpr size_t TOTAL_VIRTUAL_MEMORY       = MAX_REGIONS * REGION_SIZE + FSA_ARENA_SIZE + METADATA_SIZE + PAGE_SIZE * 2;
+static constexpr size_t FSA_SIZES_COUNT            = 6;
+static constexpr size_t FSA_SIZES[FSA_SIZES_COUNT] = {16, 32, 64, 128, 256, 512};
+static constexpr size_t COALESCE_LISTS_COUNT       = 3;
 
 struct free_list_t {
     free_list_t* next;
@@ -40,34 +44,29 @@ struct alignas(ALIGNMENT) region_t {
     RegionType region_type;
 };
 
+struct free_node_t;
+
 struct alignas(ALIGNMENT) block_t {
     size_t current_size;
     size_t prev_size;
-    free_node_t* free_node;
+    free_node_t* free_node{nullptr};
     bool is_free;
-
-    block_t(size_t size, size_t prev, bool free)
-        : current_size(size)
-        , prev_size(prev)
-        , free_node(nullptr)
-        , is_free(free)
-    {
-    }
 };
 
 struct alignas(ALIGNMENT) free_node_t {
-    free_node_t* next;
-    free_node_t* prev;
-    block_t* header;
-    size_t list_index;
+    free_node_t* next{nullptr};
+    free_node_t* prev{nullptr};
+    block_t* header{nullptr};
+    size_t list_index{};
+};
 
-    free_node_t()
-        : next(nullptr)
-        , prev(nullptr)
-        , header(nullptr)
-        , list_index(0)
-    {
-    }
+// FSA pools - each pool manages blocks of fixed size
+struct FSAPool {
+    size_t block_size{};
+    free_list_t* free_list{nullptr};
+    char* memory_pool{nullptr};
+    size_t pool_size{};
+    size_t used_blocks{};
 };
 
 static_assert(sizeof(free_list_t) % ALIGNMENT == 0, "free_list_t not aligned");
@@ -80,12 +79,15 @@ static_assert(sizeof(free_node_t) % ALIGNMENT == 0, "free_node_t not aligned");
 static_assert(alignof(free_node_t) == ALIGNMENT, "free_node_t alignment wrong");
 
 static char* g_virtual_memory         = nullptr;
+static char* g_fsa_arena_start        = nullptr;
+static char* g_fsa_arena_end          = nullptr;
 static region_t* g_regions            = nullptr;
 static free_node_t* g_free_nodes_pool = nullptr;
 static free_node_t** g_free_lists     = nullptr;
 static size_t g_free_nodes_used       = 0;
 static size_t g_current_offset        = 0;
 static size_t g_max_free_nodes        = 0;
+FSAPool g_fsa_pools[FSA_SIZES_COUNT];
 
 inline constexpr size_t alignSize(size_t size) noexcept
 {
@@ -97,31 +99,38 @@ inline constexpr size_t alignToPage(size_t size) noexcept
     return (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 }
 
-size_t getFSASizeClass(size_t size) noexcept
+inline size_t getFSASizeClass(size_t size) noexcept
 {
-    for (size_t i = 0; i < MemoryAllocator::FSA_SIZES_COUNT; ++i) {
-        if (size <= MemoryAllocator::FSA_SIZES[i]) {
-            return i;
-        }
+    if (size < 16) {
+        return 0;
+    } else if (size > 512) {
+        return FSA_SIZES_COUNT;
     }
-    return MemoryAllocator::FSA_SIZES_COUNT;
+
+    // 17-31 → 5, 32-63 → 6, 64-127 → 7, 128-255 → 8, 256-511 → 9, 512 → 10
+    // And then minius 4
+    return std::bit_width(size - 1) - 4;
 }
 
-size_t getCoalesceListIndex(size_t size) noexcept
+inline constexpr size_t getCoalesceListIndex(size_t size) noexcept
 {
-    if (size <= SMALL_REGION_MAX)
+    if (size <= SMALL_REGION_MAX) {
         return 0;
-    if (size > SMALL_REGION_MAX && size <= MEDIUM_REGION_MAX)
+    }
+    if (size > SMALL_REGION_MAX && size <= MEDIUM_REGION_MAX) {
         return 1;
+    }
     return 2;
 }
 
-RegionType getRegionType(size_t size) noexcept
+inline constexpr RegionType getRegionType(size_t size) noexcept
 {
-    if (size <= SMALL_REGION_MAX)
+    if (size <= SMALL_REGION_MAX) {
         return RegionType::SMALL;
-    if (size <= MEDIUM_REGION_MAX)
+    }
+    if (size <= MEDIUM_REGION_MAX) {
         return RegionType::MEDIUM;
+    }
     return RegionType::LARGE;
 }
 
@@ -137,12 +146,14 @@ inline void* getPointerFromBlock(block_t* block) noexcept
 
 block_t* getNextBlock(block_t* block, region_t* region) noexcept
 {
-    if (!block || !region)
+    if (!block || !region) {
         return nullptr;
+    }
 
     char* block_end = reinterpret_cast<char*>(block) + block->current_size;
-    if (block_end >= region->end)
+    if (block_end >= region->end) {
         return nullptr;
+    }
 
     return reinterpret_cast<block_t*>(block_end);
 }
@@ -350,8 +361,9 @@ inline constexpr size_t getOptimalSplitSize(RegionType region_type, size_t remai
 
 void initializeRegion(region_t* region) noexcept
 {
-    if (!region)
+    if (!region) [[unlikely]] {
         return;
+    }
 
     RegionType region_type = region->region_type;
     char* current          = region->start;
@@ -365,20 +377,15 @@ void initializeRegion(region_t* region) noexcept
     size_t remaining       = region->end - current;
     size_t prev_block_size = 0;
 
-    while (remaining > sizeof(block_t) + ALIGNMENT) {
-        size_t target_block_size = getOptimalSplitSize(region_type, remaining);
-
-        size_t block_size = (target_block_size <= remaining) ? target_block_size : alignSize(remaining);
-
-        if (block_size < sizeof(block_t) + ALIGNMENT) {
-            break;
-        }
-
-        block_t* block = ::new (current) block_t(block_size, prev_block_size, true);
+    auto allocateBlock = +[](char* memory, size_t block_size, size_t prev_block_size) noexcept {
+        block_t* block      = ::new (memory) block_t{};
+        block->current_size = block_size;
+        block->prev_size    = prev_block_size;
+        block->is_free      = true;
 
         free_node_t* node = allocateFreeNode();
         if (!node) {
-            break;
+            return false;
         }
 
         node->header      = block;
@@ -386,23 +393,31 @@ void initializeRegion(region_t* region) noexcept
         size_t list_index = getCoalesceListIndex(user_size);
         addToFreeList(node, list_index);
 
+        return true;
+    };
+
+    while (remaining > sizeof(block_t) + ALIGNMENT) {
+        size_t target_block_size = getOptimalSplitSize(region_type, remaining);
+        size_t block_size        = (target_block_size <= remaining) ? target_block_size : alignSize(remaining);
+
+        if (block_size < sizeof(block_t) + ALIGNMENT) {
+            break;
+        }
+        if (!allocateBlock(current, block_size, prev_block_size)) {
+            break;
+        }
+
         prev_block_size = block_size;
         current += block_size;
         remaining -= block_size;
 
+        // added all remaining size to the last node
         if (region_type == RegionType::LARGE && prev_block_size >= alignSize(5_MB + sizeof(block_t))) {
-            if (remaining < alignSize(5_MB + sizeof(block_t))) {
-                if (remaining >= sizeof(block_t) + ALIGNMENT) {
-                    size_t last_block_size = alignSize(remaining);
-                    block_t* last_block    = ::new (current) block_t(last_block_size, prev_block_size, true);
-
-                    free_node_t* last_node = allocateFreeNode();
-                    if (last_node) {
-                        last_node->header      = last_block;
-                        size_t last_user_size  = last_block_size - sizeof(block_t);
-                        size_t last_list_index = getCoalesceListIndex(last_user_size);
-                        addToFreeList(last_node, last_list_index);
-                    }
+            if (remaining < alignSize(5_MB + sizeof(block_t)) && remaining >= sizeof(block_t) + ALIGNMENT) {
+                size_t last_block_size = alignSize(remaining);
+                if (!allocateBlock(current, last_block_size, prev_block_size)) {
+                    std::cerr << "WARNING: allocation has failed for LARGE region at ptr=" << static_cast<void*>(current) << " with size=" << last_block_size
+                              << std::endl;
                 }
                 break;
             }
@@ -411,14 +426,8 @@ void initializeRegion(region_t* region) noexcept
 
     if (remaining >= sizeof(block_t) + ALIGNMENT) {
         size_t block_size = alignSize(remaining);
-        block_t* block    = ::new (current) block_t(block_size, prev_block_size, true);
-
-        free_node_t* node = allocateFreeNode();
-        if (node) {
-            node->header      = block;
-            size_t user_size  = block_size - sizeof(block_t);
-            size_t list_index = getCoalesceListIndex(user_size);
-            addToFreeList(node, list_index);
+        if (!allocateBlock(current, block_size, prev_block_size)) {
+            std::cerr << "WARNING: allocation has failed at ptr=" << static_cast<void*>(current) << " with size=" << block_size << std::endl;
         }
     }
 }
@@ -433,9 +442,48 @@ bool isPointerInCoalesceRegion(void* ptr) noexcept
     return false;
 }
 
-[[nodiscard]] void* allocateFromCoalesce(size_t size, Statistics& stats) noexcept
+[[nodiscard]] block_t* tryToSplitCoalesce(block_t* best_fit, size_t total_size, size_t aligned_new_size, size_t remaining) noexcept
 {
-    if (size > LARGE_ALLOC_THRESHOLD) [[unlikely]] {
+    if (aligned_new_size < sizeof(block_t) + ALIGNMENT) {
+        return best_fit;
+    }
+    if (g_free_nodes_used >= g_max_free_nodes) {
+        return best_fit;
+    }
+
+    best_fit->current_size = total_size + (remaining - aligned_new_size);
+
+    char* new_block_addr = reinterpret_cast<char*>(best_fit) + best_fit->current_size;
+
+    assert((reinterpret_cast<uintptr_t>(new_block_addr) & (ALIGNMENT - 1)) == 0);
+
+    block_t* new_block      = ::new (new_block_addr) block_t{};
+    new_block->current_size = aligned_new_size;
+    new_block->prev_size    = best_fit->current_size;
+    new_block->is_free      = true;
+
+    region_t* region = findRegionForBlock(best_fit);
+    if (region) {
+        block_t* next = getNextBlock(new_block, region);
+        if (next) {
+            next->prev_size = new_block->current_size;
+        }
+    }
+
+    free_node_t* new_node = allocateFreeNode();
+    if (new_node) {
+        new_node->header      = new_block;
+        size_t user_size      = new_block->current_size - sizeof(block_t);
+        size_t new_list_index = getCoalesceListIndex(user_size);
+        addToFreeList(new_node, new_list_index);
+    }
+
+    return best_fit;
+}
+
+[[nodiscard]] void* allocateFromCoalesce(size_t size) noexcept
+{
+    if (size >= LARGE_ALLOC_THRESHOLD) [[unlikely]] {
         return nullptr;
     }
 
@@ -445,7 +493,7 @@ bool isPointerInCoalesceRegion(void* ptr) noexcept
 
     block_t* best_fit = bestFitApproach(total_size, list_index);
 
-    for (size_t i = list_index + 1; !best_fit && i < MemoryAllocator::COALESCE_LISTS_COUNT; ++i) {
+    for (size_t i = list_index + 1; !best_fit && i < COALESCE_LISTS_COUNT; ++i) {
         best_fit = bestFitApproach(total_size, i);
     }
 
@@ -458,7 +506,7 @@ bool isPointerInCoalesceRegion(void* ptr) noexcept
         initializeRegion(new_region);
 
         best_fit = bestFitApproach(total_size, list_index);
-        for (size_t i = list_index + 1; !best_fit && i < MemoryAllocator::COALESCE_LISTS_COUNT; ++i) {
+        for (size_t i = list_index + 1; !best_fit && i < COALESCE_LISTS_COUNT; ++i) {
             best_fit = bestFitApproach(total_size, i);
         }
     }
@@ -474,64 +522,30 @@ bool isPointerInCoalesceRegion(void* ptr) noexcept
 
     best_fit->is_free = false;
 
+    // split logic for the remaning size
     size_t remaining = best_fit->current_size - total_size;
     if (remaining >= sizeof(block_t) + ALIGNMENT) {
         size_t min_split_size = (region_type == RegionType::LARGE) ? alignSize(1_MB + sizeof(block_t)) : alignSize(4_KB + sizeof(block_t));
-
         if (remaining >= min_split_size) {
-            size_t aligned_new_size = remaining & ~(ALIGNMENT - 1);
-
-            if (aligned_new_size >= sizeof(block_t) + ALIGNMENT) {
-                if (g_free_nodes_used < g_max_free_nodes) {
-                    best_fit->current_size = total_size + (remaining - aligned_new_size);
-
-                    char* new_block_addr = reinterpret_cast<char*>(best_fit) + best_fit->current_size;
-
-                    assert((reinterpret_cast<uintptr_t>(new_block_addr) & (ALIGNMENT - 1)) == 0);
-
-                    block_t* new_block = ::new (new_block_addr) block_t(aligned_new_size, best_fit->current_size, true);
-
-                    region_t* region = findRegionForBlock(best_fit);
-                    if (region) {
-                        block_t* next = getNextBlock(new_block, region);
-                        if (next) {
-                            next->prev_size = new_block->current_size;
-                        }
-                    }
-
-                    free_node_t* new_node = allocateFreeNode();
-                    if (new_node) {
-                        new_node->header      = new_block;
-                        size_t user_size      = new_block->current_size - sizeof(block_t);
-                        size_t new_list_index = getCoalesceListIndex(user_size);
-                        addToFreeList(new_node, new_list_index);
-                    }
-                }
-            }
+            size_t aligned_new_size = remaining & ~(ALIGNMENT - 1); // lower border
+            best_fit                = tryToSplitCoalesce(best_fit, total_size, aligned_new_size, remaining);
         }
     }
-
-#if ALLOCATOR_DEBUG
-    stats.coalesce_alloc_count++;
-    stats.total_allocations++;
-    stats.current_allocated += size;
-    stats.peak_allocated = std::max(stats.peak_allocated, stats.current_allocated);
-#endif
 
     void* result = getPointerFromBlock(best_fit);
     assert((reinterpret_cast<uintptr_t>(result) & (ALIGNMENT - 1)) == 0);
     return result;
 }
 
-void freeCoalesce(void* ptr, Statistics& stats) noexcept
+size_t freeCoalesce(void* ptr) noexcept
 {
     if (!ptr) {
-        return;
+        return 0;
     }
 
     block_t* block = getBlockFromPointer(ptr);
-    if (!block) {
-        return;
+    if (!block || block->is_free) {
+        return 0;
     }
 
     size_t user_size = block->current_size - sizeof(block_t);
@@ -539,7 +553,7 @@ void freeCoalesce(void* ptr, Statistics& stats) noexcept
 
     region_t* region = findRegionForBlock(block);
     if (!region) {
-        return;
+        return 0;
     }
 
     block_t* prev = getPrevBlock(block);
@@ -567,13 +581,10 @@ void freeCoalesce(void* ptr, Statistics& stats) noexcept
         addToFreeList(new_node, list_index);
     }
 
-#if ALLOCATOR_DEBUG
-    stats.total_frees++;
-    stats.current_allocated -= user_size;
-#endif
+    return user_size;
 }
 
-void initFSA(MemoryAllocator::FSAPool& pool, size_t block_size, char* memory, size_t mem_size) noexcept
+void initFSA(FSAPool& pool, size_t block_size, char* memory, size_t mem_size) noexcept
 {
     pool.block_size  = block_size;
     pool.memory_pool = memory;
@@ -581,21 +592,21 @@ void initFSA(MemoryAllocator::FSAPool& pool, size_t block_size, char* memory, si
     pool.used_blocks = 0;
     pool.free_list   = nullptr;
 
-    assert((reinterpret_cast<uintptr_t>(memory) & (ALIGNMENT - 1)) == 0);
+    assert((reinterpret_cast<uintptr_t>(memory) & (ALIGNMENT - 1)) == 0 && "a memory fot FSA is not aligned");
 
     size_t block_count = mem_size / block_size;
 
     for (size_t i = 0; i < block_count; ++i) {
         free_list_t* block = reinterpret_cast<free_list_t*>(memory + i * block_size);
 
-        assert((reinterpret_cast<uintptr_t>(block) & (ALIGNMENT - 1)) == 0);
+        assert((reinterpret_cast<uintptr_t>(block) & (ALIGNMENT - 1)) == 0 && "a memory for FSA blocks is not aligned");
 
         block->next    = pool.free_list;
         pool.free_list = block;
     }
 }
 
-void* allocFSA(MemoryAllocator::FSAPool& pool, Statistics& stats) noexcept
+[[nodiscard]] void* allocFSA(FSAPool& pool) noexcept
 {
     if (!pool.free_list) {
         return nullptr;
@@ -605,38 +616,21 @@ void* allocFSA(MemoryAllocator::FSAPool& pool, Statistics& stats) noexcept
     pool.free_list     = block->next;
     pool.used_blocks++;
 
-#if ALLOCATOR_DEBUG
-    stats.fsa_alloc_count++;
-    stats.total_allocations++;
-    stats.current_allocated += pool.block_size;
-    stats.peak_allocated = std::max(stats.peak_allocated, stats.current_allocated);
-#endif
-
     return block;
 }
 
-void freeFSA(void* ptr, MemoryAllocator::FSAPool& pool, Statistics& stats) noexcept
+void freeFSA(void* ptr, FSAPool& pool) noexcept
 {
     free_list_t* block = static_cast<free_list_t*>(ptr);
     block->next        = pool.free_list;
     pool.free_list     = block;
     pool.used_blocks--;
-
-#if ALLOCATOR_DEBUG
-    stats.total_frees++;
-    stats.current_allocated -= pool.block_size;
-#endif
 }
 
-inline bool isInFSAArena(void* ptr, char* fsa_arena_start, char* fsa_arena_end) noexcept
+inline bool isInFSAArena(void* ptr) noexcept
 {
-    assert(fsa_arena_start < fsa_arena_end && "fsa area start > sfa area end!!!");
-    return ptr >= fsa_arena_start && ptr < fsa_arena_end;
-}
-
-MemoryAllocator::MemoryAllocator()
-    : coalesce_alloc_(REGION_SIZE)
-{
+    assert(g_fsa_arena_start < g_fsa_arena_end && "fsa area start > sfa area end!!!");
+    return ptr >= g_fsa_arena_start && ptr < g_fsa_arena_end;
 }
 
 MemoryAllocator::~MemoryAllocator()
@@ -646,8 +640,20 @@ MemoryAllocator::~MemoryAllocator()
 
 void MemoryAllocator::init()
 {
-    if (is_initialized_)
+    if (is_initialized_) {
         return;
+    }
+
+    auto page_size = sysconf(_SC_PAGESIZE);
+    if (page_size == -1) {
+        perror("sysconf");
+        return;
+    }
+
+    if (page_size != PAGE_SIZE) {
+        std::cerr << "ERROR: inappropriate page size on the system! sys_size=" << page_size << ", allocator_page_size=" << PAGE_SIZE << std::endl;
+        return;
+    }
 
     g_virtual_memory = static_cast<char*>(mmap(nullptr, TOTAL_VIRTUAL_MEMORY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
 
@@ -656,10 +662,6 @@ void MemoryAllocator::init()
         perror("mmap");
         return;
     }
-
-#if ALLOCATOR_DEBUG
-    stats_.mmap_count++;
-#endif
 
     mprotect(g_virtual_memory, PAGE_SIZE, PROT_NONE);
     mprotect(g_virtual_memory + TOTAL_VIRTUAL_MEMORY - PAGE_SIZE, PAGE_SIZE, PROT_NONE);
@@ -683,8 +685,8 @@ void MemoryAllocator::init()
         g_regions[i].region_type = RegionType::SMALL;
     }
 
-    g_free_lists = reinterpret_cast<free_node_t**>(advanceAligned(MemoryAllocator::COALESCE_LISTS_COUNT * sizeof(free_node_t*)));
-    for (size_t i = 0; i < MemoryAllocator::COALESCE_LISTS_COUNT; ++i) {
+    g_free_lists = reinterpret_cast<free_node_t**>(advanceAligned(COALESCE_LISTS_COUNT * sizeof(free_node_t*)));
+    for (size_t i = 0; i < COALESCE_LISTS_COUNT; ++i) {
         g_free_lists[i] = nullptr;
     }
 
@@ -694,6 +696,7 @@ void MemoryAllocator::init()
         return;
     }
 
+    // TODO: I should experiment with a set pf parameters
     size_t nodes_memory = usable_size / 10;
     g_max_free_nodes    = nodes_memory / sizeof(free_node_t);
     if (g_max_free_nodes < 10000) {
@@ -703,7 +706,7 @@ void MemoryAllocator::init()
     g_free_nodes_pool = reinterpret_cast<free_node_t*>(advanceAligned(g_max_free_nodes * sizeof(free_node_t)));
 
     for (size_t i = 0; i < g_max_free_nodes; ++i) {
-        ::new (&g_free_nodes_pool[i]) free_node_t();
+        ::new (&g_free_nodes_pool[i]) free_node_t{};
     }
     g_free_nodes_used = 0;
 
@@ -717,14 +720,15 @@ void MemoryAllocator::init()
         return;
     }
 
-    fsa_arena_start_ = usable_memory + offset;
-    fsa_arena_end_   = fsa_arena_start_ + fsa_arena_size;
+    g_fsa_arena_start = usable_memory + offset;
+    g_fsa_arena_end   = g_fsa_arena_start + fsa_arena_size;
     offset += fsa_arena_size;
 
     size_t fsa_memory_per_pool = fsa_arena_size / FSA_SIZES_COUNT;
     fsa_memory_per_pool        = alignSize(fsa_memory_per_pool);
+    assert((fsa_memory_per_pool & (fsa_memory_per_pool - 1)) == 0 && "fsa per pool size must be power of two");
 
-    char* current_pool_start = fsa_arena_start_;
+    char* current_pool_start = g_fsa_arena_start;
     for (size_t i = 0; i < FSA_SIZES_COUNT; ++i) {
         uintptr_t addr = reinterpret_cast<uintptr_t>(current_pool_start);
         if (addr & (ALIGNMENT - 1)) {
@@ -733,11 +737,11 @@ void MemoryAllocator::init()
         }
 
         size_t actual_pool_size = fsa_memory_per_pool;
-        if (current_pool_start + actual_pool_size > fsa_arena_end_) {
-            actual_pool_size = fsa_arena_end_ - current_pool_start;
+        if (current_pool_start + actual_pool_size > g_fsa_arena_end) {
+            actual_pool_size = g_fsa_arena_end - current_pool_start;
         }
 
-        initFSA(fsa_pools_[i], FSA_SIZES[i], current_pool_start, actual_pool_size);
+        initFSA(g_fsa_pools[i], FSA_SIZES[i], current_pool_start, actual_pool_size);
         current_pool_start += actual_pool_size;
     }
 
@@ -747,6 +751,9 @@ void MemoryAllocator::init()
         region_t* region = allocateRegionByType(static_cast<RegionType>(i));
         if (region) {
             initializeRegion(region);
+        } else {
+            std::cerr << "ERROR: failed to allocate region of type=" << i << std::endl;
+            return;
         }
     }
 
@@ -755,8 +762,18 @@ void MemoryAllocator::init()
 
 void MemoryAllocator::destroy()
 {
-    if (!is_initialized_ || !g_virtual_memory)
+    if (!is_initialized_ || !g_virtual_memory) {
         return;
+    }
+
+#if ALLOCATOR_DEBUG
+    if (stats_.total_allocations != stats_.total_frees) {
+        std::cerr << "WARNING: memory leak has detected\n"
+                  << "fsa_allocs=" << stats_.fsa_alloc_count << "\ncoalesce_allocs=" << stats_.coalesce_alloc_count
+                  << "\nlarge_allocs=" << stats_.large_alloc_count << "\nWith total used memory=" << stats_.current_allocated << std::endl;
+    }
+    stats_ = Statistics{};
+#endif
 
     munmap(g_virtual_memory, TOTAL_VIRTUAL_MEMORY);
 
@@ -768,20 +785,16 @@ void MemoryAllocator::destroy()
     g_current_offset  = 0;
     g_max_free_nodes  = 0;
 
-    fsa_arena_start_ = nullptr;
-    fsa_arena_end_   = nullptr;
+    g_fsa_arena_start = nullptr;
+    g_fsa_arena_end   = nullptr;
 
     for (size_t i = 0; i < FSA_SIZES_COUNT; ++i) {
-        fsa_pools_[i].memory_pool = nullptr;
-        fsa_pools_[i].free_list   = nullptr;
-        fsa_pools_[i].used_blocks = 0;
+        g_fsa_pools[i].memory_pool = nullptr;
+        g_fsa_pools[i].free_list   = nullptr;
+        g_fsa_pools[i].used_blocks = 0;
     }
 
     is_initialized_ = false;
-
-#if ALLOCATOR_DEBUG
-    stats_.munmap_count++;
-#endif
 }
 
 void* MemoryAllocator::alloc(size_t size)
@@ -798,12 +811,24 @@ void* MemoryAllocator::alloc(size_t size)
     if (aligned_size < LARGE_ALLOC_THRESHOLD) [[likely]] {
         size_t size_class = getFSASizeClass(aligned_size);
         if (size_class < FSA_SIZES_COUNT) {
-            result = allocFSA(fsa_pools_[size_class], stats_);
-            if (!result) {
-                result = allocateFromCoalesce(aligned_size, stats_);
+            result = allocFSA(g_fsa_pools[size_class]);
+#if ALLOCATOR_DEBUG
+            stats_.fsa_alloc_count++;
+            stats_.total_allocations++;
+            stats_.current_allocated += g_fsa_pools[size_class].block_size;
+            stats_.peak_allocated = std::max(stats_.peak_allocated, stats_.current_allocated);
+#endif
+        }
+        if (!result) {
+            result = allocateFromCoalesce(aligned_size);
+#if ALLOCATOR_DEBUG
+            if (result) {
+                stats_.coalesce_alloc_count++;
+                stats_.total_allocations++;
+                stats_.current_allocated += size;
+                stats_.peak_allocated = std::max(stats_.peak_allocated, stats_.current_allocated);
             }
-        } else {
-            result = allocateFromCoalesce(aligned_size, stats_);
+#endif
         }
     } else {
         result = ::malloc(aligned_size);
@@ -824,20 +849,30 @@ void* MemoryAllocator::alloc(size_t size)
 void MemoryAllocator::free(void* p)
 {
     assert(is_initialized_ && "allocator need to be initilized");
-    if (!p)
+    if (!p) {
         return;
+    }
 
-    if (isInFSAArena(p, fsa_arena_start_, fsa_arena_end_)) {
-        for (size_t i = 0; i < FSA_SIZES_COUNT; ++i) {
-            char* pool_start = fsa_pools_[i].memory_pool;
-            char* pool_end   = pool_start + fsa_pools_[i].pool_size;
-            if (p >= pool_start && p < pool_end) {
-                freeFSA(p, fsa_pools_[i], stats_);
-                return;
-            }
+    if (isInFSAArena(p)) {
+        char* pools_start = g_fsa_pools[0].memory_pool;
+        size_t pool_size  = g_fsa_pools[0].pool_size;
+        size_t pool_index = static_cast<size_t>((static_cast<char*>(p) - pools_start)) >> std::countr_zero(pool_size);
+
+        if (pool_index < FSA_SIZES_COUNT) {
+            freeFSA(p, g_fsa_pools[pool_index]);
+#if ALLOCATOR_DEBUG
+            stats_.total_frees++;
+            stats_.current_allocated -= g_fsa_pools[pool_index].block_size;
+#endif
+        } else {
+            throw std::runtime_error{"CRITICAL ERROR: problems with index estimation"};
         }
     } else if (isPointerInCoalesceRegion(p)) {
-        freeCoalesce(p, stats_);
+        [[maybe_unused]] size_t freed_meme = freeCoalesce(p);
+#if ALLOCATOR_DEBUG
+        stats_.total_frees += freed_meme != 0;
+        stats_.current_allocated -= freed_meme;
+#endif
     } else {
 #if ALLOCATOR_DEBUG
         if (auto it = large_allocs_map_.find(p); it != large_allocs_map_.end()) {
@@ -867,8 +902,6 @@ void MemoryAllocator::dumpStat() const
     std::cout << "FSA allocations: " << stats_.fsa_alloc_count << "\n";
     std::cout << "Coalesce allocations: " << stats_.coalesce_alloc_count << "\n";
     std::cout << "Large allocations: " << stats_.large_alloc_count << "\n";
-    std::cout << "mmap calls: " << stats_.mmap_count << "\n";
-    std::cout << "munmap calls: " << stats_.munmap_count << "\n";
 
     size_t used_regions   = 0;
     size_t small_regions  = 0;
@@ -902,15 +935,16 @@ void MemoryAllocator::dumpStat() const
 
     std::cout << "\nFSA Pool Usage:\n";
     for (size_t i = 0; i < FSA_SIZES_COUNT; ++i) {
-        size_t total_blocks = fsa_pools_[i].pool_size / fsa_pools_[i].block_size;
-        double usage        = static_cast<double>(fsa_pools_[i].used_blocks) / total_blocks * 100.0;
-        std::cout << "  Size " << fsa_pools_[i].block_size << " bytes: " << fsa_pools_[i].used_blocks << "/" << total_blocks << " blocks (" << usage << "%)\n";
+        size_t total_blocks = g_fsa_pools[i].pool_size / g_fsa_pools[i].block_size;
+        double usage        = static_cast<double>(g_fsa_pools[i].used_blocks) / total_blocks * 100.0;
+        std::cout << "  Size " << g_fsa_pools[i].block_size << " bytes: " << g_fsa_pools[i].used_blocks << "/" << total_blocks << " blocks (" << usage
+                  << "%)\n";
     }
 
     std::cout << "\nCoalesce Free Lists:\n";
     if (g_free_lists) {
         static const char* list_names[] = {"Small (<=10KB)", "Medium (<=1MB)", "Large (<=10MB)"};
-        for (size_t i = 0; i < MemoryAllocator::COALESCE_LISTS_COUNT; ++i) {
+        for (size_t i = 0; i < COALESCE_LISTS_COUNT; ++i) {
             size_t count         = 0;
             free_node_t* current = g_free_lists[i];
             while (current) {

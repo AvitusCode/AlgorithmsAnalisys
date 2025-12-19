@@ -10,8 +10,6 @@ struct Statistics {
     size_t large_alloc_count{};
     size_t current_allocated{};
     size_t peak_allocated{};
-    size_t mmap_count{};
-    size_t munmap_count{};
     size_t regions_count{};
 };
 } // namespace jd::memory

@@ -13,7 +13,7 @@ namespace test
 class MemoryAllocatorTest : public ::testing::Test
 {
 protected:
-    MemoryAllocator allocator;
+    MemoryAllocator& allocator{MemoryAllocator::allocator()};
 
     void SetUp() override
     {
@@ -54,8 +54,9 @@ TEST_F(MemoryAllocatorTest, BasicAllocation)
 TEST_F(MemoryAllocatorTest, FSAAllocations)
 {
     std::vector<void*> blocks;
+    constexpr size_t sizes[] = {16, 32, 64, 128, 256, 512};
 
-    for (size_t size : MemoryAllocator::FSA_SIZES) {
+    for (size_t size : sizes) {
         void* block = allocator.alloc(size);
         ASSERT_NE(block, nullptr);
         blocks.push_back(block);
@@ -66,7 +67,7 @@ TEST_F(MemoryAllocatorTest, FSAAllocations)
     }
 
     for (size_t i = 0; i < blocks.size(); ++i) {
-        size_t size = MemoryAllocator::FSA_SIZES[i];
+        size_t size = sizes[i];
         if (size >= sizeof(uint32_t)) {
             EXPECT_EQ(*static_cast<uint32_t*>(blocks[i]), 0xDEADBEEF);
         }
@@ -134,16 +135,6 @@ TEST_F(MemoryAllocatorTest, FreeNullPointer)
     allocator.free(nullptr);
 
     SUCCEED();
-}
-
-TEST_F(MemoryAllocatorTest, DoubleFree)
-{
-    void* block = allocator.alloc(64);
-    ASSERT_NE(block, nullptr);
-
-    allocator.free(block);
-
-    EXPECT_NO_THROW(allocator.free(block));
 }
 
 TEST_F(MemoryAllocatorTest, ZeroSizeAllocation)

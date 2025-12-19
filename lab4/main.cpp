@@ -10,7 +10,7 @@ int main(void)
 {
     std::cout << "Lab4" << std::endl;
 
-    MemoryAllocator allocator;
+    auto& allocator = MemoryAllocator::allocator();
     allocator.init();
 
     int* pi    = (int*)allocator.alloc(sizeof(int));
